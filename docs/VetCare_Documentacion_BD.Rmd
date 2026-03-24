@@ -1,0 +1,1001 @@
+---
+title: "VetCare - Clínica Veterinaria"
+subtitle: "Documentación de Base de Datos — Implementación en 4 Motores"
+author: "Base de Datos II — 2026"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+------------------------------------------------------------------------
+
+# Descripción del Proyecto
+
+| Elemento | Detalle |
+|----|----|
+| **Nombre** | VetCare — Clínica Veterinaria |
+| **Dominio** | Salud animal / Historias clínicas / Agenda |
+| **Objetivo** | Diseñar una BD relacional para soportar operación, control y reporting del negocio |
+| **Usuarios típicos** | Administrador, Operación, Supervisor, Auditor/Consulta |
+| **Motores** | MySQL 8.0, PostgreSQL 14, MS SQL Server 2022, Oracle XE 21c |
+
+## Narrativa
+
+VetCare es un sistema del dominio "Salud animal / Historias clínicas / Agenda". Requiere centralizar su operación, controlar estados y trazabilidad, y habilitar reporting por fechas y responsables. Debe soportar roles y auditoría básica.
+
+## Reglas de Negocio
+
+-   Toda transacción debe tener estado y trazabilidad de fechas.
+-   No se permiten registros detalle sin su cabecera (maestro-detalle).
+-   Integridad referencial obligatoria (PK/FK) y restricciones (UNIQUE/CHECK) cuando aplique.
+-   Soporte de reportes por rangos de fechas y por responsable.
+-   Evitar solapamientos para recursos críticos cuando aplique (citas/reservas/turnos).
+
+## Entidades y relaciones
+
+| Entidad | Campos principales |
+|----|----|
+| owners | id, doc_type, doc_number, first_name, last_name, phone, email, status |
+| pets | id, owner_id (FK), name, status |
+| vets | id, doc_type, doc_number, first_name, last_name, phone, email, status |
+| appointments | id, pet_id (FK), vet_id (FK), appointment_date, subtotal, tax, total, status |
+| consultations | id, appointment_id (FK), name, status |
+| prescriptions | id, consultation_id (FK), name, status |
+| vaccines | id, name, status |
+| vaccine_applications | id, pet_id (FK), vaccine_id (FK), name, status |
+| payments | id, appointment_id (FK), reference, method, amount, payment_date, status |
+
+------------------------------------------------------------------------
+
+# MySQL 8.0
+
+## Paso 1 — Entrar al motor desde Ubuntu (WSL)
+
+Para trabajar con MySQL utilizamos Docker. Los comandos para arrancar el contenedor y entrar al motor son los siguientes:
+
+``` bash
+# Arrancar el contenedor de MySQL
+sudo docker start mysql-server
+
+# Entrar al motor con el usuario dailen
+docker exec -it mysql-server mysql -udailen -p12345678
+```
+
+## Paso 2 — Crear la base de datos
+
+Una vez dentro del motor ejecutamos:
+
+``` sql
+CREATE DATABASE vetcare;
+USE vetcare;
+```
+
+![](images/2creaciondebasededatos.png)
+
+## Paso 3 — Crear las tablas con sus relaciones
+
+``` sql
+CREATE TABLE owners (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_doc UNIQUE (doc_type, doc_number)
+);
+
+CREATE TABLE vets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_vet_doc UNIQUE (doc_type, doc_number)
+);
+
+CREATE TABLE pets (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    owner_id INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_owner_id FOREIGN KEY (owner_id) REFERENCES owners(id)
+);
+
+CREATE TABLE vaccines (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active'
+);
+
+CREATE TABLE appointments (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vet_id INT NOT NULL,
+    appointment_date DATE NOT NULL,
+    subtotal DECIMAL(10,2) NOT NULL,
+    tax DECIMAL(10,2) NOT NULL,
+    total DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_vet_id FOREIGN KEY (vet_id) REFERENCES vets(id)
+);
+
+CREATE TABLE consultations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+
+CREATE TABLE prescriptions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    consultation_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id)
+);
+
+CREATE TABLE vaccine_applications (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vaccine_id INT NOT NULL,
+    name VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_va_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_va_vaccine_id FOREIGN KEY (vaccine_id) REFERENCES vaccines(id)
+);
+
+CREATE TABLE payments (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    reference VARCHAR(100),
+    method VARCHAR(50) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    payment_date DATE NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_payment_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+```
+
+## Paso 4 — Verificar las tablas creadas
+
+``` sql
+SHOW TABLES;
+```
+
+![](images/3creaciondetablas-01.png)
+
+## Paso 5 — Evidencia en el editor del motor (Terminal)
+
+A continuación se muestra la evidencia de las tablas creadas directamente en el editor del motor MySQL desde la terminal de Ubuntu:
+
+![](images/4descripciondetablas.png)
+
+![](images/5descripciondetablas.png)
+
+## Paso 6 — Diagrama ER en MySQL Workbench
+
+Para visualizar el diagrama ER en Workbench se siguió el siguiente proceso:
+
+1.  Abrir MySQL Workbench y crear una conexión con los datos del servidor, verificamos si están nuestras tablas anteriormente creadas y procedemos a borrarlas para hacerlas desde este gestor de Workbench.
+2.  Hecho esto nos dirigimos a **Database → Reverse Engineer**.
+3.  Seleccionar la base de datos `vetcare`.
+4.  Ejecutar el proceso y visualizar el diagrama generado automáticamente.
+
+![![](images/8creacionbd.png)](images/6bdworkbench.png)
+
+![](images/10primeratablaowners.png)
+
+![](images/11codigoowners.png)
+
+![](images/12codigovets.png)
+
+![](images/13codigopets.png)
+
+![](images/14codigovaccines.png)
+
+![](images/15codigoappointments.png)
+
+![](images/16codigoconsultations.png)
+
+![](images/17vaccine_applications.png)
+
+![](images/18codigopayments.png)
+
+![](images/19verdiagrama.png)
+
+![Diagrama generado por worbench](images/20DiagramaFinalworrkbench.png)
+
+![](images/24siguientepaso.png)
+
+![](images/25codigo.png)
+
+![](images/26codigo.png)
+
+![](images/27codigo.png){width="838"}
+
+![](images/28codigo.png)
+
+![](images/29codigo.png)
+
+![](images/30codigo.png)
+
+![](images/31codigo.png)
+
+![](images/32codigo.png)
+
+Verificamos nuevamente las tablas en Workbench que se hayan creado correctamente.
+
+![](images/33verificacioncreaciontablas.png)
+
+## Paso 7 — Diagrama ER en DBeaver
+
+Para visualizar el diagrama ER en DBeaver:
+
+1.  Creamos una nueva conexión MySQL con mi ip puerto `3306`.
+2.  Expandimos la base de datos `vetcare`.
+3.  Clic derecho sobre la base de datos → **View Diagram**.
+
+![](images/34Conexiondbeaver.png)
+
+![](images/35conexion.png)
+
+![](images/36verificacion.png)
+
+![](images/37diagrama.png)
+
+Luego de esto eliminamos nuestra base de datos y empezamos a crearla desde cero:
+
+![](images/38dropbasededatos.png)
+
+![](images/39%20codigos.png)
+
+![](images/40%20codigos.png)
+
+![](images/41%20codigos.png)
+
+![](images/42%20codigos.png)
+
+![](images/43%20codigos.png)
+
+![](images/44codigos.png)
+
+![](images/45codigos.png)
+
+![](images/46codigos.png)
+
+![](images/47codigos.png)
+
+![](images/48codigos.png)
+
+ejecutamos todas nuestras tablas creadas y nos diseña el siguiente diagrama:
+
+![](images/49diagramafinal.png){width="1148"}
+
+Al finalizas, añadimos desde ubuntu algunos campos de las tablas que no se pudieron crear en su momento, pero que esto no afecta el diagrama.
+
+![](images/50añadirstatus.png)
+
+# PostgreSQL 14
+
+## Paso 1 — Entrar al motor desde Ubuntu (WSL)
+
+``` bash
+# Arrancar el contenedor de PostgreSQL
+sudo docker start postgres-server
+
+# Entrar al motor
+docker exec -it postgres-server psql -U dailen -d mibd
+```
+
+## Paso 2 — Crear la base de datos
+
+``` sql
+CREATE DATABASE vetcare;
+\c vetcare
+```
+
+## Paso 3 — Crear las tablas con sus relaciones
+
+En PostgreSQL se usa `SERIAL` y `BIGSERIAL` en lugar de `AUTO_INCREMENT`:
+
+``` sql
+CREATE TABLE owners (
+    id SERIAL PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_doc UNIQUE (doc_type, doc_number)
+);
+
+CREATE TABLE vets (
+    id SERIAL PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_vet_doc UNIQUE (doc_type, doc_number)
+);
+
+CREATE TABLE pets (
+    id SERIAL PRIMARY KEY,
+    owner_id INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_owner_id FOREIGN KEY (owner_id) REFERENCES owners(id)
+);
+
+CREATE TABLE vaccines (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active'
+);
+
+CREATE TABLE appointments (
+    id BIGSERIAL PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vet_id INT NOT NULL,
+    appointment_date DATE NOT NULL,
+    subtotal DECIMAL(10,2) NOT NULL,
+    tax DECIMAL(10,2) NOT NULL,
+    total DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_vet_id FOREIGN KEY (vet_id) REFERENCES vets(id)
+);
+
+CREATE TABLE consultations (
+    id BIGSERIAL PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+
+CREATE TABLE prescriptions (
+    id BIGSERIAL PRIMARY KEY,
+    consultation_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id)
+);
+
+CREATE TABLE vaccine_applications (
+    id BIGSERIAL PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vaccine_id INT NOT NULL,
+    name VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_va_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_va_vaccine_id FOREIGN KEY (vaccine_id) REFERENCES vaccines(id)
+);
+
+CREATE TABLE payments (
+    id BIGSERIAL PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    reference VARCHAR(100),
+    method VARCHAR(50) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    payment_date DATE NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_payment_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+```
+
+## Paso 4 — Verificar las tablas creadas
+
+``` sql
+\dt
+```
+
+## Paso 5 — Diagrama ER en DBeaver
+
+1.  Crear conexión PostgreSQL con mi ip, puerto `5433`.
+2.  Usuario `dailen`, base de datos `vetcare`.
+3.  Clic derecho sobre `vetcare` → **View Diagram**.
+
+![](images/1postgres.png)
+
+![](images/2ingreso.png)
+
+![](images/3verificacion.png)
+
+![](images/4diagrama.png)
+
+Luego generado el diagrama por DBeaver, eliminamos nuestra base de datos y procedemos a crearla manualmente desde este mismo gestor.
+
+![](images/5desconectar.png)
+
+![](images/6conectar.png)
+
+![]()
+
+![](images/7crearbd-01.png)
+
+![](images/8owners.png)
+
+![](images/9vets.png)
+
+![](images/10pets.png)
+
+![](images/11vaccines.png)
+
+![](images/12%20appointments.png)
+
+![](images/13consultations.png)
+
+![](images/14prescriptions.png)
+
+![](images/15vaccineaplications.png)
+
+![](images/16payments.png)
+
+Verificamos la creacion de estas tablas
+
+![](images/17verificacion.png)
+
+Luego de esto generamos el diagrama :
+
+![](images/18diagrama.png)
+
+## Paso 6 — Diagrama ER en pgAdmin 4
+
+1.  Abrir pgAdmin 4 y registrar servidor con mi ip, puerto `5433`.
+
+2.  Expandir **Databases → vetcare → Schemas → public → Tables**.
+
+3.  Clic derecho en **Tables** → **ERD For Database**.
+
+    ![](images/20Conexion.png)
+
+![](images/21Creacionbd.png)
+
+![](images/22ejemplocreacion.png)
+
+![](images/23ejemplocampos.png)
+
+![](images/24ejemplo.png)
+
+![](images/24ejemplo-01.png)
+
+![](images/25ejemplo.png)
+
+![](images/26fk.png)
+
+![](images/27otratablaejemplo.png)
+
+![](images/28campos.png)
+
+![](images/29fk.png)
+
+![](images/30revisiontablas.png)
+
+Hechas todas estas tablas procedemos a generar el diagrama:
+
+![](images/31diagrama.png)
+
+al final añadimos las alteraciones que no le pudimos añadir desde el apartado de ubuntu:
+
+![](images/32añadiralteracion.png)
+
+# MS SQL Server 2022
+
+## Paso 1 — Entrar al motor desde Ubuntu (WSL)
+
+``` bash
+# Arrancar el contenedor de SQL Server
+sudo docker start sqlserver-container
+
+# Entrar al motor
+docker exec -it sqlserver-container /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -U SA -P 'Dailen123*' -No
+```
+
+## Paso 2 — Crear la base de datos
+
+``` sql
+CREATE DATABASE vetcare;
+GO
+USE vetcare;
+GO
+```
+
+![](images/Captura%20de%20pantalla%202026-03-23%20134811.png)
+
+## Paso 3 — Crear las tablas con sus relaciones
+
+En SQL Server se usa `IDENTITY(1,1)` en lugar de `AUTO_INCREMENT`:
+
+``` sql
+CREATE TABLE owners (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_doc UNIQUE (doc_type, doc_number)
+);
+GO
+
+CREATE TABLE vets (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    doc_type VARCHAR(20) NOT NULL,
+    doc_number VARCHAR(30) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    phone VARCHAR(20),
+    email VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT uq_vet_doc UNIQUE (doc_type, doc_number)
+);
+GO
+
+CREATE TABLE pets (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    owner_id INT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_owner_id FOREIGN KEY (owner_id) REFERENCES owners(id)
+);
+GO
+
+CREATE TABLE vaccines (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active'
+);
+GO
+
+CREATE TABLE appointments (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vet_id INT NOT NULL,
+    appointment_date DATE NOT NULL,
+    subtotal DECIMAL(10,2) NOT NULL,
+    tax DECIMAL(10,2) NOT NULL,
+    total DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_vet_id FOREIGN KEY (vet_id) REFERENCES vets(id)
+);
+GO
+
+CREATE TABLE consultations (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+GO
+
+CREATE TABLE prescriptions (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    consultation_id BIGINT NOT NULL,
+    name VARCHAR(150) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id)
+);
+GO
+
+CREATE TABLE vaccine_applications (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id INT NOT NULL,
+    vaccine_id INT NOT NULL,
+    name VARCHAR(150),
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_va_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_va_vaccine_id FOREIGN KEY (vaccine_id) REFERENCES vaccines(id)
+);
+GO
+
+CREATE TABLE payments (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    appointment_id BIGINT NOT NULL,
+    reference VARCHAR(100),
+    method VARCHAR(50) NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    payment_date DATE NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    CONSTRAINT fk_payment_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+GO
+```
+
+![](images/Captura%20de%20pantalla%202026-03-23%20135459.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20135639.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20135825.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20135931.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20140125.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20140325.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20140546.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20140802.png)
+
+## Paso 4 — Diagrama ER en DBeaver
+
+1.  Crear conexión SQL Server con mi ip, puerto `1433`.
+2.  Usuario `SA`, base de datos `vetcare`.
+3.  Clic derecho sobre `vetcare` → **View Diagram**.
+
+![](images/Captura%20de%20pantalla%202026-03-23%20141420.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20141454.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20141554.png)
+
+Luego de generado nuestro diagrama, procedemos a borrar la base de datos y la crearemos de distinta forma:
+
+![](images/Captura%20de%20pantalla%202026-03-23%20142212.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20142648.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20142856.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20142918.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20142945.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143005.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143023.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143044.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143103.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143124.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20143150.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20150102.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20150404.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20151433.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20151553.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20151926.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20152514.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20152655.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20152957.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20154016.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20154124.png)
+
+## Paso 5 — Diagrama ER en SSMS (SQL Server Management Studio)
+
+1.  Abrimos SSMS y conectamos con mi ip, puerto `1433`.
+2.  Expandimos **Databases → vetcare → Database Diagrams**.
+3.  Clic derecho → **New Database Diagram** → seleccionamos todas las tablas.
+
+![](images/Captura%20de%20pantalla%202026-03-23%20160735.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20161459.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20161738.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20222220.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20222253.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20223242.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20224644.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20224921.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20225310.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20225608.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20232749.png)
+
+![](images/Captura%20de%20pantalla%202026-03-23%20232844.png)
+
+y ahora generaremos nuestro diagrama:
+
+![](images/Captura%20de%20pantalla%202026-03-23%20232910.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20000155.png)
+
+------------------------------------------------------------------------
+
+# Oracle XE 21c
+
+## Paso 1 — Entrar al motor desde Ubuntu (WSL)
+
+``` bash
+# Arrancar el contenedor de Oracle
+sudo docker start oracle19c
+
+# Entrar al motor
+docker exec -it oracle19c sqlplus system/admin123@XE
+```
+
+## Paso 2 — Crear usuario/esquema para VetCare
+
+En Oracle no se crea una "base de datos" como en otros motores — se crea un **usuario/esquema**:
+
+``` sql
+CREATE USER vetcare IDENTIFIED BY admin123;
+GRANT ALL PRIVILEGES TO vetcare;
+CONNECT vetcare/admin123@XE;
+```
+
+![](images/Captura%20de%20pantalla%202026-03-24%20005206.png)
+
+## Paso 3 — Crear las tablas con sus relaciones
+
+En Oracle se usa `NUMBER` y `GENERATED ALWAYS AS IDENTITY` en lugar de `AUTO_INCREMENT`. Los tipos de texto son `VARCHAR2`:
+
+``` sql
+CREATE TABLE owners (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    doc_type VARCHAR2(20) NOT NULL,
+    doc_number VARCHAR2(30) NOT NULL,
+    first_name VARCHAR2(100) NOT NULL,
+    last_name VARCHAR2(100) NOT NULL,
+    phone VARCHAR2(20),
+    email VARCHAR2(150),
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT uq_doc UNIQUE (doc_type, doc_number)
+);
+/
+
+CREATE TABLE vets (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    doc_type VARCHAR2(20) NOT NULL,
+    doc_number VARCHAR2(30) NOT NULL,
+    first_name VARCHAR2(100) NOT NULL,
+    last_name VARCHAR2(100) NOT NULL,
+    phone VARCHAR2(20),
+    email VARCHAR2(150),
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT uq_vet_doc UNIQUE (doc_type, doc_number)
+);
+/
+
+CREATE TABLE pets (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner_id NUMBER NOT NULL,
+    name VARCHAR2(100) NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_owner_id FOREIGN KEY (owner_id) REFERENCES owners(id)
+);
+/
+
+CREATE TABLE vaccines (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name VARCHAR2(100) NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active'
+);
+/
+
+CREATE TABLE appointments (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    pet_id NUMBER NOT NULL,
+    vet_id NUMBER NOT NULL,
+    appointment_date DATE NOT NULL,
+    subtotal NUMBER(10,2) NOT NULL,
+    tax NUMBER(10,2) NOT NULL,
+    total NUMBER(10,2) NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_vet_id FOREIGN KEY (vet_id) REFERENCES vets(id)
+);
+/
+
+CREATE TABLE consultations (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    appointment_id NUMBER NOT NULL,
+    name VARCHAR2(150) NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+/
+
+CREATE TABLE prescriptions (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    consultation_id NUMBER NOT NULL,
+    name VARCHAR2(150) NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_consultation_id FOREIGN KEY (consultation_id) REFERENCES consultations(id)
+);
+/
+
+CREATE TABLE vaccine_applications (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    pet_id NUMBER NOT NULL,
+    vaccine_id NUMBER NOT NULL,
+    name VARCHAR2(150),
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_va_pet_id FOREIGN KEY (pet_id) REFERENCES pets(id),
+    CONSTRAINT fk_va_vaccine_id FOREIGN KEY (vaccine_id) REFERENCES vaccines(id)
+);
+/
+
+CREATE TABLE payments (
+    id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    appointment_id NUMBER NOT NULL,
+    reference VARCHAR2(100),
+    method VARCHAR2(50) NOT NULL,
+    amount NUMBER(10,2) NOT NULL,
+    payment_date DATE NOT NULL,
+    status VARCHAR2(20) DEFAULT 'active',
+    CONSTRAINT fk_payment_appointment_id FOREIGN KEY (appointment_id) REFERENCES appointments(id)
+);
+/
+```
+
+![](images/Captura%20de%20pantalla%202026-03-24%20005219.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20005254.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20005254-01.png)
+
+## Paso 4 — Verificar las tablas creadas
+
+``` sql
+SELECT table_name FROM user_tables;
+```
+
+## Paso 5 — Evidencia en el editor del motor (Terminal)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20005813.png)
+
+## Paso 6 — Diagrama ER en DBeaver
+
+1.  Crear conexión Oracle con mi ip, puerto `1521`, SID `XE`.
+2.  Usuario `vetcare`, contraseña `admin123`.
+3.  Clic derecho sobre el esquema → **View Diagram**.
+
+![](images/Captura%20de%20pantalla%202026-03-24%20014914.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20022331.png)
+
+Ahora borramos la base de datos y la volvemos a crear de forma manual desde este mismo gestor:
+
+![](images/Captura%20de%20pantalla%202026-03-24%20023647.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20023951.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20024254.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20024544.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20024855.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20025100.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20025304.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20025538.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20025835.png)
+
+y generamos nuevamente nuestro diagrama:
+
+![](images/Captura%20de%20pantalla%202026-03-24%20030410.png)
+
+## Paso 7 — Diagrama ER en SQL Developer
+
+1.  Abrir SQL Developer y crear conexión con ip, puerto `1521`, SID `XE`.
+2.  Usuario `vetcare`, contraseña `admin123`.
+3.  Ir a **View → Data Modeler → Browser**.
+4.  Clic derecho → **New Diagram** → seleccionar todas las tablas.
+
+![](images/Captura%20de%20pantalla%202026-03-24%20032223.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20032240.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20034438.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20034444.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20034711.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20034717.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20040236.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20040242.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20040419.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20040454.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20040641.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20041451.png)
+
+![](images/Captura%20de%20pantalla%202026-03-24%20041520.png)
+
+y generamos nuestro diagrama;
+
+![](images/Captura%20de%20pantalla%202026-03-24%20050317.png)
+
+------------------------------------------------------------------------
+
+# Diferencias entre Motores
+
+| Concepto | MySQL | PostgreSQL | SQL Server | Oracle |
+|----|----|----|----|----|
+| Auto incremento | `AUTO_INCREMENT` | `SERIAL` / `BIGSERIAL` | `IDENTITY(1,1)` | `GENERATED ALWAYS AS IDENTITY` |
+| Tipo entero grande | `BIGINT` | `BIGINT` | `BIGINT` | `NUMBER` |
+| Tipo texto | `VARCHAR(n)` | `VARCHAR(n)` | `VARCHAR(n)` | `VARCHAR2(n)` |
+| Tipo decimal | `DECIMAL(10,2)` | `DECIMAL(10,2)` | `DECIMAL(10,2)` | `NUMBER(10,2)` |
+| Separador comandos | `;` | `;` | `GO` | `/` |
+| Ver tablas | `SHOW TABLES` | `\dt` | `INFORMATION_SCHEMA.TABLES` | `user_tables` |
+| Crear BD | `CREATE DATABASE` | `CREATE DATABASE` | `CREATE DATABASE` | `CREATE USER` (esquema) |
+
+------------------------------------------------------------------------
+
+# Resumen del Proyecto
+
+| Motor              | Tablas | Relaciones | Terminal | Gestor 1  | Gestor 2      |
+|--------------------|--------|------------|----------|-----------|---------------|
+| MySQL 8.0          | 9      | 8          | Terminal | Workbench | DBeaver       |
+| PostgreSQL 14      | 9      | 8          | Terminal | DBeaver   | pgAdmin 4     |
+| MS SQL Server 2022 | 9      | 8          | Terminal | DBeaver   | SSMS          |
+| Oracle XE 21c      | 9      | 8          | Terminal | DBeaver   | SQL Developer |
+
+## Tablas implementadas
+
+1.  `owners` — Propietarios de mascotas
+2.  `pets` — Mascotas
+3.  `vets` — Veterinarios
+4.  `appointments` — Citas
+5.  `consultations` — Consultas médicas
+6.  `prescriptions` — Recetas
+7.  `vaccines` — Catálogo de vacunas
+8.  `vaccine_applications` — Aplicaciones de vacunas
+9.  `payments` — Pagos
+
+## Relaciones implementadas
+
+1.  `owners` → `pets` (un propietario tiene muchas mascotas)
+2.  `pets` → `appointments` (una mascota tiene muchas citas)
+3.  `vets` → `appointments` (un veterinario atiende muchas citas)
+4.  `appointments` → `consultations` (una cita genera muchas consultas)
+5.  `appointments` → `payments` (una cita tiene muchos pagos)
+6.  `consultations` → `prescriptions` (una consulta genera muchas recetas)
+7.  `pets` → `vaccine_applications` (una mascota recibe muchas vacunas)
+8.  `vaccines` → `vaccine_applications` (una vacuna se aplica muchas veces)
